@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DMARCpeel – Steg 1: Rå filläsare</title>
+  <title>DMARCpeel – Steg 2: XML-analys</title>
   <style>
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 960px;
+      max-width: 1100px;
       margin: 2rem auto;
       padding: 0 1rem;
       line-height: 1.5;
-      color: #1a1a1a;
-      background-color: #f9fafb;
+      color: #1e293b;
+      background-color: #f8fafc;
     }
     header {
       margin-bottom: 1.5rem;
@@ -30,7 +30,91 @@
       background-color: #334155;
     }
     #fileInfo {
-      margin-top: 1rem;
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+      color: #64748b;
+    }
+    .meta-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 1rem 1.5rem;
+      margin-top: 1.5rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    .meta-item strong {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+    }
+    .meta-item span {
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      margin-top: 1.5rem;
+      font-size: 0.9rem;
+    }
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    th {
+      background-color: #f1f5f9;
+      font-weight: 600;
+      color: #334155;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    tr:hover td {
+      background-color: #f8fafc;
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .pass {
+      background-color: #dcfce7;
+      color: #166534;
+    }
+    .fail {
+      background-color: #fee2e2;
+      color: #991b1b;
+    }
+    .neutral {
+      background-color: #f1f5f9;
+      color: #475569;
+    }
+    .sub-detail {
+      display: block;
+      font-size: 0.78rem;
+      color: #64748b;
+      margin-top: 0.2rem;
+    }
+    details {
+      margin-top: 2rem;
+    }
+    summary {
+      cursor: pointer;
       font-weight: 600;
       color: #475569;
     }
@@ -42,10 +126,12 @@
       overflow-x: auto;
       white-space: pre-wrap;
       word-break: break-word;
-      margin-top: 1rem;
+      margin-top: 0.75rem;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.875rem;
-      min-height: 200px;
+      font-size: 0.85rem;
+    }
+    .hidden {
+      display: none;
     }
   </style>
 </head>
@@ -53,39 +139,180 @@
 
   <header>
     <h1>DMARCpeel</h1>
-    <p>Steg 1: Välj en lokal okomprimerad fil för att läsa ut råinnehållet direkt i webbläsaren.</p>
+    <p>Lokal DMARC-analysator – parsa och granska dina XML-rapporter helt i webbläsaren.</p>
   </header>
 
   <main>
-    <button id="openFileBtn">Välj lokal fil</button>
+    <button id="openFileBtn">Välj DMARC XML-fil</button>
     <div id="fileInfo">Ingen fil vald ännu.</div>
-    <pre id="output">Här visas filens innehåll...</pre>
+
+    <!-- Metadata för rapporten -->
+    <section id="metaSection" class="meta-card hidden"></section>
+
+    <!-- Resultattabell -->
+    <table id="resultTable" class="hidden">
+      <thead>
+        <tr>
+          <th>Sändande IP</th>
+          <th>Antal</th>
+          <th>Header From</th>
+          <th>Åtgärd (Disposition)</th>
+          <th>SPF (DMARC / Rå)</th>
+          <th>DKIM (DMARC / Rå)</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+
+    <!-- Hopfällbar rådata -->
+    <details id="rawDetails" class="hidden">
+      <summary>Visa rå XML-fil</summary>
+      <pre id="output"></pre>
+    </details>
   </main>
 
   <script>
     const openFileBtn = document.getElementById('openFileBtn');
     const fileInfo = document.getElementById('fileInfo');
+    const metaSection = document.getElementById('metaSection');
+    const resultTable = document.getElementById('resultTable');
+    const tableBody = document.getElementById('tableBody');
+    const rawDetails = document.getElementById('rawDetails');
     const output = document.getElementById('output');
+
+    // Hjälpfunktion för att säkert hämta text ur en XML-nod
+    function getText(parent, tagName, fallback = '–') {
+      if (!parent) return fallback;
+      const el = parent.getElementsByTagName(tagName)[0];
+      return el && el.textContent ? el.textContent.trim() : fallback;
+    }
+
+    // Skapar en färgkodad bricka för pass/fail
+    function createBadge(value) {
+      const val = value.toLowerCase();
+      let cls = 'neutral';
+      if (val === 'pass') cls = 'pass';
+      if (val === 'fail') cls = 'fail';
+      return `<span class="badge ${cls}">${value}</span>`;
+    }
+
+    // Formaterar Unix-tidsstämpel till läsbart svenskt datum
+    function formatUnixDate(unixStr) {
+      const ts = parseInt(unixStr, 10);
+      if (isNaN(ts)) return '–';
+      return new Date(ts * 1000).toLocaleString('sv-SE', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
 
     openFileBtn.addEventListener('click', async () => {
       try {
-        // Öppnar webbläsarens lokala filväljare (kräver Chrome/Edge eller liknande Chromium-läsare)
-        const [fileHandle] = await window.showOpenFilePicker({
-          multiple: false
-        });
-
+        const [fileHandle] = await window.showOpenFilePicker({ multiple: false });
         const file = await fileHandle.getFile();
         const rawText = await file.text();
 
         fileInfo.textContent = `Vald fil: ${file.name} (${file.size} bytes)`;
-        // Använder textContent så att XML-taggarna skrivs ut som ren text och inte tolkas som HTML
         output.textContent = rawText;
 
+        // Parsa XML-strängen
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(rawText, 'application/xml');
+
+        if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+          throw new Error('Filen verkar inte vara en giltig XML-fil.');
+        }
+
+        // 1. Läs ut rapport-metadata
+        const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
+        const policy = xmlDoc.getElementsByTagName('policy_published')[0];
+        const dateRange = meta ? meta.getElementsByTagName('date_range')[0] : null;
+
+        const orgName = getText(meta, 'org_name');
+        const reportId = getText(meta, 'report_id');
+        const domain = getText(policy, 'domain');
+        const pPolicy = getText(policy, 'p');
+        const beginDate = formatUnixDate(getText(dateRange, 'begin'));
+        const endDate = formatUnixDate(getText(dateRange, 'end'));
+
+        // 2. Läs ut alla <record>-element
+        const records = Array.from(xmlDoc.getElementsByTagName('record'));
+        let totalMessages = 0;
+
+        tableBody.innerHTML = '';
+
+        records.forEach(record => {
+          const row = record.getElementsByTagName('row')[0];
+          const identifiers = record.getElementsByTagName('identifiers')[0];
+          const authResults = record.getElementsByTagName('auth_results')[0];
+          const policyEval = row ? row.getElementsByTagName('policy_evaluated')[0] : null;
+
+          const sourceIp = getText(row, 'source_ip');
+          const count = parseInt(getText(row, 'count', '0'), 10);
+          totalMessages += count;
+
+          const disposition = getText(policyEval, 'disposition');
+          const dmarcDkim = getText(policyEval, 'dkim');
+          const dmarcSpf = getText(policyEval, 'spf');
+          const headerFrom = getText(identifiers, 'header_from');
+
+          // Rå SPF-info (kan ibland saknas i vissa rapporter)
+          const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
+          const rawSpfResult = getText(spfNode, 'result');
+          const rawSpfDomain = getText(spfNode, 'domain', '');
+
+          // Rå DKIM-info (en rapport kan innehålla flera DKIM-signaturer)
+          const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
+          let dkimDetailsHtml = '';
+          if (dkimNodes.length > 0) {
+            dkimDetailsHtml = dkimNodes.map(d => {
+              const res = getText(d, 'result');
+              const dom = getText(d, 'domain', '');
+              const sel = getText(d, 'selector', '');
+              return `${res} (${dom}${sel ? ' / ' + sel : ''})`;
+            }).join('<br>');
+          } else {
+            dkimDetailsHtml = 'Ingen signatur';
+          }
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="mono"><strong>${sourceIp}</strong></td>
+            <td><strong>${count}</strong></td>
+            <td class="mono">${headerFrom}</td>
+            <td>${createBadge(disposition)}</td>
+            <td>
+              ${createBadge(dmarcSpf)}
+              <span class="sub-detail">Rå: ${rawSpfResult} ${rawSpfDomain ? `(${rawSpfDomain})` : ''}</span>
+            </td>
+            <td>
+              ${createBadge(dmarcDkim)}
+              <span class="sub-detail">${dkimDetailsHtml}</span>
+            </td>
+          `;
+          tableBody.appendChild(tr);
+        });
+
+        // Rendera metadata-kortet
+        metaSection.innerHTML = `
+          <div class="meta-item"><strong>Rapportör</strong><span>${orgName}</span></div>
+          <div class="meta-item"><strong>Din domän (Policy)</strong><span>${domain} (p=${pPolicy})</span></div>
+          <div class="meta-item"><strong>Totalt antal mail</strong><span>${totalMessages} st (${records.length} poster)</span></div>
+          <div class="meta-item"><strong>Period</strong><span>${beginDate} – ${endDate}</span></div>
+        `;
+
+        // Visa sektionerna
+        metaSection.classList.remove('hidden');
+        resultTable.classList.remove('hidden');
+        rawDetails.classList.remove('hidden');
+
       } catch (err) {
-        // Ignorera fel om användaren bara klickade på "Avbryt" i fildialogen
         if (err.name !== 'AbortError') {
           console.error(err);
-          fileInfo.textContent = `Fel vid läsning: ${err.message}`;
+          fileInfo.textContent = `Fel: ${err.message}`;
         }
       }
     });
