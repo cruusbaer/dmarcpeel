@@ -78,7 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
-      if (xmlDoc.getElementsByTagName('parsererror').length > 0) throw::newError('Ogiltig XML');
+      if (xmlDoc.getElementsByTagName('parsererror').length > 0) throw new Error('Ogiltig XML');
 
       const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
       const policy = xmlDoc.getElementsByTagName('policy_published')[0];
@@ -163,7 +163,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fileInfo.textContent = `Hittade ${files.length} rapporter i katalogen. Sammanställer...`;
 
-    // Aggregeringsstruktur per rapportör
     const aggregator = {};
     let totalGlobalMessages = 0;
     let successfulFiles = 0;
@@ -179,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const orgName = getText(meta, 'org_name', 'Okänd rapportör');
 
         if (!aggregator[orgName]) {
-          aggregator[orgName] = { fileCount: 0, totalMessages: 0, records: [] };
+          aggregator[orgName] = { fileCount: 0, totalMessages: 0 };
         }
         aggregator[orgName].fileCount++;
 
@@ -197,7 +196,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // Rita upp aggregerad tabell per rapportör
     tableHeaderRow.innerHTML = `
       <th>Rapportör (Org)</th>
       <th>Antal rapporter</th>
