@@ -39,13 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function formatUnixDate(unixStr) {
     const ts = parseInt(unixStr, 10);
     if (isNaN(ts)) return '–';
-    return new Date(ts * 1000).toLocaleString('sv-SE', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    return new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   }
 
   function compareIPs(ipA, ipB) {
@@ -66,18 +60,67 @@ document.addEventListener('DOMContentLoaded', () => {
     return ipA.localeCompare(ipB);
   }
 
-  // --- Funktion för att aggregera rader med samma IP och identiskt utfall ---
+  // Extract both raw authentication results and policy-evaluated alignment outcomes
+  function parseRecordNode(record) {
+    const row = record.getElementsByTagName('row')[0];
+    const identifiers = record.getElementsByTagName('identifiers')[0];
+    const authResults = record.getElementsByTagName('auth_results')[0];
+    const policyEval = row ? row.getElementsByTagName('policy_evaluated')[0] : null;
+
+    const sourceIp = getText(row, 'source_ip');
+    const count = parseInt(getText(row, 'count', '0'), 10);
+    const disposition = getText(policyEval, 'disposition', 'none');
+
+    // Policy-evaluated alignment outcomes (DMARC perspective)
+    const spfAligned = getText(policyEval, 'spf', 'fail');
+    const dkimAligned = getText(policyEval, 'dkim', 'fail');
+    const dmarcPassed = (dkimAligned === 'pass' || spfAligned === 'pass') ? 'pass' : 'fail';
+
+    const headerFrom = getText(identifiers, 'header_from');
+
+    // Raw authentication outcomes (<auth_results>)
+    const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
+    const rawSpfResult = getText(spfNode, 'result', 'none');
+
+    const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
+    let rawDkimResult = 'none';
+    if (dkimNodes.length > 0) {
+      const results = dkimNodes.map(n => getText(n, 'result', 'none').toLowerCase());
+      rawDkimResult = results.includes('pass') ? 'pass' : results[0];
+    }
+
+    return {
+      sourceIp,
+      count,
+      headerFrom,
+      disposition,
+      dmarcPassed,
+      rawSpfResult,
+      spfAligned,
+      rawDkimResult,
+      dkimAligned
+    };
+  }
+
+  // Aggregate records only when IP, Header From, and all security/alignment outcomes match
   function aggregateRecords(records) {
     const map = new Map();
 
     records.forEach(rec => {
-      // Skapa en unik nyckel baserat på IP samt alla statuskolumner
-      const key = `${rec.sourceIp}|${rec.headerFrom}|${rec.disposition}|${rec.dmarcPassed}|${rec.rawSpfResult}|${rec.bestDkimResult}`;
+      const key = [
+        rec.sourceIp,
+        rec.headerFrom,
+        rec.disposition,
+        rec.dmarcPassed,
+        rec.rawSpfResult,
+        rec.spfAligned,
+        rec.rawDkimResult,
+        rec.dkimAligned
+      ].join('|');
 
       if (map.has(key)) {
         map.get(key).count += rec.count;
       } else {
-        // Skapa en kopia av objektet så vi inte muterar originalet
         map.set(key, { ...rec });
       }
     });
@@ -105,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {}
       }
     }
-    throw new Error('Kunde inte extrahera DMARC-bilaga ur .msg.');
+    throw new Error('Could not extract DMARC attachment from .msg file.');
   }
 
   async function extractXmlFromFile(file) {
@@ -120,41 +163,44 @@ document.addEventListener('DOMContentLoaded', () => {
       const zip = new JSZip();
       const zipContent = await zip.loadAsync(arrayBuffer);
       const xmlFilename = Object.keys(zipContent.files).find(name => name.toLowerCase().endsWith('.xml'));
-      if (!xmlFilename) throw new Error('Ingen XML-fil i ZIP.');
+      if (!xmlFilename) throw new Error('No XML file found inside ZIP archive.');
       return await zipContent.files[xmlFilename].async('string');
     }
     if (filename.endsWith('.eml')) {
       const emlText = new TextDecoder().decode(arrayBuffer);
       const xmlMatch = emlText.match(/<\?xml[\s\S]*<\/feedback>/i);
       if (xmlMatch) return xmlMatch[0];
-      throw new Error('Kunde inte läsa EML-bilaga.');
+      throw new Error('Could not extract XML from EML attachment.');
     }
     if (filename.endsWith('.msg')) return await parseMsgFile(arrayBuffer);
 
     const decoder = new TextDecoder('utf-8');
     const text = decoder.decode(arrayBuffer);
     if (text.includes('<feedback>') || text.includes('<?xml')) return text;
-    throw new Error('Ogiltigt format eller ej XML.');
+    throw new Error('Unsupported format or invalid XML.');
   }
 
-  function renderDetailTable(records, orgName, domain) {
-    detailNav.classList.remove('hidden');
-    detailTitle.textContent = `Detaljer för: ${orgName} (${domain || 'Domän'})`;
+  function renderDetailTable(records, orgName, domain, showBackNav = true) {
+    if (showBackNav) {
+      detailNav.classList.remove('hidden');
+      detailTitle.textContent = `Details for: ${orgName} (${domain || 'Domain'})`;
+    } else {
+      detailNav.classList.add('hidden');
+    }
 
-    // 1. Aggregera rader med identiskt utfall och IP
     const aggregated = aggregateRecords(records);
-
-    // 2. Sortera numeriskt på IP
     const sortedRecords = [...aggregated].sort((a, b) => compareIPs(a.sourceIp, b.sourceIp));
 
     tableHeaderRow.innerHTML = `
-      <th>Sändande IP</th>
-      <th>Antal</th>
+      <th>Source IP</th>
+      <th>Count</th>
       <th>Header From</th>
-      <th>Åtgärd</th>
+      <th>Disposition</th>
       <th>DMARC</th>
       <th>SPF</th>
+      <th>SPF Alignment</th>
       <th>DKIM</th>
+      <th>DKIM Alignment</th>
     `;
     tableBody.innerHTML = '';
 
@@ -167,13 +213,15 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>${createBadge(rec.disposition)}</td>
         <td>${createBadge(rec.dmarcPassed)}</td>
         <td>${createBadge(rec.rawSpfResult)}</td>
-        <td>${createBadge(rec.bestDkimResult)}</td>
+        <td>${createBadge(rec.spfAligned)}</td>
+        <td>${createBadge(rec.rawDkimResult)}</td>
+        <td>${createBadge(rec.dkimAligned)}</td>
       `;
       tableBody.appendChild(tr);
     });
   }
 
-  // --- 1. Hantera enskild fil ---
+  // --- 1. Handle Single Report ---
   singleFileInput.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -181,16 +229,15 @@ document.addEventListener('DOMContentLoaded', () => {
     warningsWrapper.classList.add('hidden');
 
     try {
-      fileInfo.textContent = `Bearbetar fil: ${file.name}...`;
+      fileInfo.textContent = `Processing file: ${file.name}...`;
       const rawXmlText = await extractXmlFromFile(file);
 
-      // Visa rå-XML för enskild fil
       output.textContent = rawXmlText;
       rawDetails.classList.remove('hidden');
 
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
-      if (xmlDoc.getElementsByTagName('parsererror').length > 0) throw new Error('Ogiltig XML-struktur');
+      if (xmlDoc.getElementsByTagName('parsererror').length > 0) throw new Error('Invalid XML structure');
 
       const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
       const policy = xmlDoc.getElementsByTagName('policy_published')[0];
@@ -201,51 +248,28 @@ document.addEventListener('DOMContentLoaded', () => {
       const beginDate = formatUnixDate(getText(dateRange, 'begin'));
       const endDate = formatUnixDate(getText(dateRange, 'end'));
 
-      const records = Array.from(xmlDoc.getElementsByTagName('record')).map(record => {
-        const row = record.getElementsByTagName('row')[0];
-        const identifiers = record.getElementsByTagName('identifiers')[0];
-        const authResults = record.getElementsByTagName('auth_results')[0];
-        const policyEval = row ? row.getElementsByTagName('policy_evaluated')[0] : null;
-
-        const sourceIp = getText(row, 'source_ip');
-        const count = parseInt(getText(row, 'count', '0'), 10);
-        const disposition = getText(policyEval, 'disposition', 'none');
-        const evalDkim = getText(policyEval, 'dkim');
-        const evalSpf = getText(policyEval, 'spf');
-        const dmarcPassed = (evalDkim === 'pass' || evalSpf === 'pass') ? 'pass' : 'fail';
-        const headerFrom = getText(identifiers, 'header_from');
-
-        const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
-        const rawSpfResult = getText(spfNode, 'result', 'none');
-
-        const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
-        const bestDkimResult = dkimNodes.length > 0 ? getText(dkimNodes[0], 'result', 'none') : 'none';
-
-        return { sourceIp, count, disposition, dmarcPassed, headerFrom, rawSpfResult, bestDkimResult };
-      });
-
+      const records = Array.from(xmlDoc.getElementsByTagName('record')).map(parseRecordNode);
       const totalMessages = records.reduce((sum, r) => sum + r.count, 0);
 
-      detailNav.classList.add('hidden');
-      renderDetailTable(records, orgName, domain);
+      renderDetailTable(records, orgName, domain, false);
 
       summarySection.innerHTML = `
-        <div class="summary-item"><strong>Rapportör</strong><span>${orgName}</span></div>
-        <div class="summary-item"><strong>Domän</strong><span>${domain}</span></div>
-        <div class="summary-item"><strong>Totalt antal mail</strong><span>${totalMessages} st</span></div>
-        <div class="summary-item"><strong>Tidsintervall</strong><span>${beginDate} – ${endDate}</span></div>
+        <div class="summary-item"><strong>Reporter</strong><span>${orgName}</span></div>
+        <div class="summary-item"><strong>Domain</strong><span>${domain}</span></div>
+        <div class="summary-item"><strong>Total Messages</strong><span>${totalMessages}</span></div>
+        <div class="summary-item"><strong>Date Range</strong><span>${beginDate} – ${endDate}</span></div>
       `;
       summarySection.classList.remove('hidden');
       resultTable.classList.remove('hidden');
-      fileInfo.textContent = `Visar rapport från: ${file.name}`;
+      fileInfo.textContent = `Showing report from: ${file.name}`;
     } catch (err) {
-      fileInfo.textContent = `Fel: ${err.message}`;
+      fileInfo.textContent = `Error: ${err.message}`;
     } finally {
       singleFileInput.value = '';
     }
   });
 
-  // --- 2. Hantera hel katalog ---
+  // --- 2. Handle Directory Batch ---
   dirInput.addEventListener('change', async (event) => {
     const files = Array.from(event.target.files).filter(file => {
       const name = file.name.toLowerCase();
@@ -253,14 +277,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     if (files.length === 0) {
-      fileInfo.textContent = 'Inga giltiga DMARC-filer hittades i katalogen.';
+      fileInfo.textContent = 'No valid DMARC report files found in the selected directory.';
       return;
     }
 
-    // Dölj rå-XML vid kataloginläsning
     rawDetails.classList.add('hidden');
-
-    fileInfo.textContent = `Hittade ${files.length} filer i katalogen. Bearbetar...`;
+    fileInfo.textContent = `Found ${files.length} files in directory. Processing...`;
 
     directoryCache = {};
     let totalGlobalMessages = 0;
@@ -275,14 +297,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
         if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
-          throw new Error('Parsererror: Ej giltig XML');
+          throw new Error('XML Parser Error: Malformed XML');
         }
 
         const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
         const policy = xmlDoc.getElementsByTagName('policy_published')[0];
         const dateRange = meta ? meta.getElementsByTagName('date_range')[0] : null;
 
-        const orgName = getText(meta, 'org_name', 'Okänd rapportör');
+        const orgName = getText(meta, 'org_name', 'Unknown Reporter');
         const domain = getText(policy, 'domain', '');
 
         const beginTs = parseInt(getText(dateRange, 'begin', '0'), 10);
@@ -295,33 +317,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         directoryCache[orgName].fileCount++;
 
-        const records = Array.from(xmlDoc.getElementsByTagName('record'));
-        records.forEach(record => {
-          const row = record.getElementsByTagName('row')[0];
-          const identifiers = record.getElementsByTagName('identifiers')[0];
-          const authResults = record.getElementsByTagName('auth_results')[0];
-          const policyEval = row ? row.getElementsByTagName('policy_evaluated')[0] : null;
-
-          const sourceIp = getText(row, 'source_ip');
-          const count = parseInt(getText(row, 'count', '0'), 10);
-          const disposition = getText(policyEval, 'disposition', 'none');
-          const evalDkim = getText(policyEval, 'dkim');
-          const evalSpf = getText(policyEval, 'spf');
-          const dmarcPassed = (evalDkim === 'pass' || evalSpf === 'pass') ? 'pass' : 'fail';
-          const headerFrom = getText(identifiers, 'header_from');
-
-          const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
-          const rawSpfResult = getText(spfNode, 'result', 'none');
-          const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
-          const bestDkimResult = dkimNodes.length > 0 ? getText(dkimNodes[0], 'result', 'none') : 'none';
-
-          totalGlobalMessages += count;
-          directoryCache[orgName].totalMessages += count;
-          if (dmarcPassed === 'pass') {
-            directoryCache[orgName].passMessages += count;
+        const records = Array.from(xmlDoc.getElementsByTagName('record')).map(parseRecordNode);
+        records.forEach(rec => {
+          totalGlobalMessages += rec.count;
+          directoryCache[orgName].totalMessages += rec.count;
+          if (rec.dmarcPassed === 'pass') {
+            directoryCache[orgName].passMessages += rec.count;
           }
-
-          directoryCache[orgName].records.push({ sourceIp, count, disposition, dmarcPassed, headerFrom, rawSpfResult, bestDkimResult });
+          directoryCache[orgName].records.push(rec);
         });
 
         successfulFiles++;
@@ -334,20 +337,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const rangeStr = (minTimestamp !== Infinity && maxTimestamp !== -Infinity) 
       ? `${formatUnixDate(minTimestamp)} – ${formatUnixDate(maxTimestamp)}` 
-      : 'Ej tillgängligt';
+      : 'Not available';
 
     summarySection.innerHTML = `
-      <div class="summary-item"><strong>Inlästa filer</strong><span>${successfulFiles} st (${files.length} hittades)</span></div>
-      <div class="summary-item"><strong>Totalt antal mail</strong><span>${totalGlobalMessages} st</span></div>
-      <div class="summary-item"><strong>Unika rapportörer</strong><span>${Object.keys(directoryCache).length} st</span></div>
-      <div class="summary-item"><strong>Tidsintervall</strong><span>${rangeStr}</span></div>
+      <div class="summary-item"><strong>Loaded Files</strong><span>${successfulFiles} (${files.length} found)</span></div>
+      <div class="summary-item"><strong>Total Messages</strong><span>${totalGlobalMessages}</span></div>
+      <div class="summary-item"><strong>Unique Reporters</strong><span>${Object.keys(directoryCache).length}</span></div>
+      <div class="summary-item"><strong>Date Range</strong><span>${rangeStr}</span></div>
     `;
     summarySection.classList.remove('hidden');
 
     if (failedFiles.length > 0) {
+      warningsWrapper.className = 'warnings-container';
       warningsWrapper.innerHTML = `
-        <details>
-          <summary>⚠️ ${failedFiles.length} filer kunde inte läsas in (Klicka för detaljer)</summary>
+        <details style="margin-top: 0;">
+          <summary>⚠️ ${failedFiles.length} file(s) could not be parsed (Click for details)</summary>
           <div class="warnings-list">
             ${failedFiles.map(f => `<div><strong>${f.name}:</strong> ${f.error}</div>`).join('')}
           </div>
@@ -359,24 +363,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     resultTable.classList.remove('hidden');
-    fileInfo.textContent = `Kataloganalys klar: ${successfulFiles} filer bearbetade. (Klicka på en rapportör för detaljer)`;
+    fileInfo.textContent = `Directory analysis complete: ${successfulFiles} files processed. (Click a reporter row to inspect details)`;
     dirInput.value = '';
   });
 
   function renderOverviewTable() {
     detailNav.classList.add('hidden');
     tableHeaderRow.innerHTML = `
-      <th>Rapportör (Org)</th>
-      <th>Antal rapporter</th>
-      <th>Totalt antal mail</th>
-      <th>Andel av volym</th>
+      <th>Reporter (Org)</th>
+      <th>Reports</th>
+      <th>Total Messages</th>
+      <th>Volume Share</th>
       <th>DMARC Pass %</th>
     `;
     tableBody.innerHTML = '';
 
+    const totalGlobalMessages = Object.values(directoryCache).reduce((sum, d) => sum + d.totalMessages, 0);
+
     Object.keys(directoryCache).forEach(org => {
       const data = directoryCache[org];
-      const totalGlobalMessages = Object.values(directoryCache).reduce((sum, d) => sum + d.totalMessages, 0);
       const share = totalGlobalMessages > 0 ? ((data.totalMessages / totalGlobalMessages) * 100).toFixed(1) : 0;
       const passPercent = data.totalMessages > 0 ? ((data.passMessages / data.totalMessages) * 100).toFixed(1) : 0;
 
@@ -386,14 +391,14 @@ document.addEventListener('DOMContentLoaded', () => {
       tr.className = 'clickable-row';
       tr.innerHTML = `
         <td><strong>${org}</strong></td>
-        <td>${data.fileCount} st</td>
+        <td>${data.fileCount}</td>
         <td><strong>${data.totalMessages}</strong></td>
         <td>${share}%</td>
         <td><span class="badge ${passBadgeClass}">${passPercent}%</span></td>
       `;
 
       tr.addEventListener('click', () => {
-        renderDetailTable(data.records, data.orgName, data.domain);
+        renderDetailTable(data.records, data.orgName, data.domain, true);
       });
 
       tableBody.appendChild(tr);
