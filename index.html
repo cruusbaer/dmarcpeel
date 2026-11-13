@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DMARCpeel – Kataloganalys</title>
   
-  <!-- Komprimeringsbibliotek -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
@@ -75,6 +74,12 @@
       font-size: 1.05rem;
       font-weight: 600;
     }
+    .nav-bar {
+      margin-top: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -82,7 +87,7 @@
       border-radius: 8px;
       overflow: hidden;
       border: 1px solid #e2e8f0;
-      margin-top: 1.5rem;
+      margin-top: 1rem;
       font-size: 0.9rem;
     }
     th, td {
@@ -95,11 +100,14 @@
       font-weight: 600;
       color: #334155;
     }
+    tr.clickable-row {
+      cursor: pointer;
+    }
+    tr.clickable-row:hover td {
+      background-color: #f1f5f9;
+    }
     tr:last-child td {
       border-bottom: none;
-    }
-    tr:hover td {
-      background-color: #f8fafc;
     }
     .mono {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -127,26 +135,26 @@
 
   <main>
     <div class="btn-group">
-      <!-- Enskild fil -->
       <input type="file" id="singleFileInput" accept=".xml,.gz,.zip,.eml,.msg">
       <button id="openFileBtn">Välj enskild rapport</button>
 
-      <!-- Hel katalog -->
       <input type="file" id="dirInput" webkitdirectory directory multiple>
       <button id="openDirBtn" class="secondary">Välj hel katalog</button>
     </div>
 
     <div id="fileInfo">Ingen fil eller katalog vald ännu.</div>
 
-    <!-- Sammanfattning -->
     <section id="summarySection" class="summary-card hidden"></section>
 
-    <!-- Huvudtabell -->
+    <!-- Menyrad för katalogdetaljer -->
+    <div id="detailNav" class="nav-bar hidden">
+      <button id="backToOverviewBtn" class="secondary">← Tillbaka till översikt</button>
+      <span id="detailTitle" style="font-weight: 600; color: #334155;"></span>
+    </div>
+
     <table id="resultTable" class="hidden">
       <thead>
-        <tr id="tableHeaderRow">
-          <!-- Dynamiska kolumner beroende på enskild fil eller katalog -->
-        </tr>
+        <tr id="tableHeaderRow"></tr>
       </thead>
       <tbody id="tableBody"></tbody>
     </table>
