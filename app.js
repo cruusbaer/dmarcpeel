@@ -47,8 +47,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Egen intern minimalistisk OLE/MSG-parser ---
-  // Outlook .msg-filer är OLE Compound-filer. De lagrar bilagor i sektorer/streams.
-  // Vi söker igenom binärdatan efter potentiella bilagors binära block eller inbäddade komprimerade strömmar.
   async function parseMsgFile(arrayBuffer) {
     const uint8 = new Uint8Array(arrayBuffer);
     
@@ -60,16 +58,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 2. Leta efter binära signaturer för GZ (1f 8b) eller ZIP (50 4b) inuti .msg-binärpannan
     for (let i = 0; i < uint8.length - 4; i++) {
-      // GZ signatur
       if (uint8[i] === 0x1f && uint8[i+1] === 0x8b) {
         const sliced = uint8.slice(i);
         try {
           return pako.inflate(sliced, { to: 'string' });
         } catch (e) {
-          // Fortsätt leta om just denna träff var falskt alarm
+          // Ignorera och fortsätt
         }
       }
-      // ZIP signatur (PK)
       if (uint8[i] === 0x50 && uint8[i+1] === 0x4b && uint8[i+2] === 0x03 && uint8[i+3] === 0x04) {
         const sliced = uint8.slice(i);
         try {
@@ -80,12 +76,12 @@ document.addEventListener('DOMContentLoaded', () => {
             return await zipContent.files[xmlFilename].async('string');
           }
         } catch (e) {
-          // Fortsätt leta
+          // Ignorera och fortsätt
         }
       }
     }
 
-    throw new Error('Kunde inte extrahera bilaga automatiskt ur Outlook .msg-filen. Prova att spara bilagan som en separat .xml, .gz eller .zip-fil.');
+    throw new Error('Kunde inte extrahera bilaga automatiskt ur Outlook .msg-filen.');
   }
 
   // --- Huvudrouter för filformat ---
@@ -113,10 +109,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const emlText = new TextDecoder().decode(arrayBuffer);
       const xmlMatch = emlText.match(/<\?xml[\s\S]*<\/feedback>/i);
       if (xmlMatch) return xmlMatch[0];
-      throw new Error('EML-filen kunde inte läsas. Kontrollera att bilagan är i .xml, .gz eller .zip-format.');
+      throw new Error('EML-filen kunde inte läsas.');
     }
 
-    // MSG (Outlook)
+    // MSG
     if (filename.endsWith('.msg')) {
       return await parseMsgFile(arrayBuffer);
     }
@@ -232,7 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
       resultTable.classList.remove('hidden');
       rawDetails.classList.remove('hidden');
 
-    }javascript catch (err) {
+    } catch (err) {
       if (err.name !== 'AbortError') {
         console.error(err);
         fileInfo.textContent = `Fel vid bearbetning: ${err.message}`;
