@@ -124,7 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return Array.from(map.values());
   }
 
-  // --- Förbättrad MSG-parser med rekursiv GZIP-sökning ---
+  // --- Utökad och robust MSG-parser ---
   async function parseMsgFile(arrayBuffer) {
     const uint8 = new Uint8Array(arrayBuffer);
     const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -134,17 +134,27 @@ document.addEventListener('DOMContentLoaded', () => {
     const xmlMatch = fullText.match(/<\?xml[\s\S]*<\/feedback>/i) || fullText.match(/<feedback[\s\S]*<\/feedback>/i);
     if (xmlMatch) return xmlMatch[0];
 
-    // 2. Sök igenom ALLA förekomster av GZIP-signaturer (0x1f 0x8b) i binärdatan
+    // 2. Avancerad GZIP-sökning som hanterar OLE-block och trailing bytes
     for (let i = 0; i < uint8.length - 4; i++) {
       if (uint8[i] === 0x1f && uint8[i+1] === 0x8b) {
+        // Testa att packa upp med reducerade chunk-storlekar om den stöter på skräp i slutet
+        for (let len = uint8.length - i; len > 100; len -= 512) {
+          try {
+            const inflated = pako.inflate(uint8.slice(i, i + len), { to: 'string' });
+            if (inflated && (inflated.includes('<feedback>') || inflated.includes('<?xml'))) {
+              return inflated;
+            }
+          } catch (e) {
+            // Fortsätt korta ner eller hoppa vidare
+          }
+        }
+        // Fallback: prova hela resten av filen direkt
         try {
           const inflated = pako.inflate(uint8.slice(i), { to: 'string' });
           if (inflated && (inflated.includes('<feedback>') || inflated.includes('<?xml'))) {
             return inflated;
           }
-        } catch (e) {
-          // Ignorera felaktiga matchningar och fortsätt leta
-        }
+        } catch (e) {}
       }
     }
 
@@ -158,13 +168,11 @@ document.addEventListener('DOMContentLoaded', () => {
           if (xmlFilename) {
             return await zipContent.files[xmlFilename].async('string');
           }
-        } catch (e) {
-          // Ignorera och fortsätt
-        }
+        } catch (e) {}
       }
     }
 
-    throw new Error('Could not extract valid DMARC XML or compressed attachment from .msg file.');
+    throw new Error('Could not extract valid DMARC XML from .msg file structure.');
   }
 
   async function extractXmlFromFile(file) {
@@ -237,7 +245,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // --- 1. Handle Single Report ---
   singleFileInput.addEventListener('change', async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -285,7 +292,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // --- 2. Handle Directory Batch ---
   dirInput.addEventListener('change', async (event) => {
     const files = Array.from(event.target.files).filter(file => {
       const name = file.name.toLowerCase();
