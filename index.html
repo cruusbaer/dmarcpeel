@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DMARCpeel – Lokal DMARC-analys</title>
   
-  <!-- Inkludera Pako (.gz), JSZip (.zip) och @kenjiuno/msgreader (.msg) via CDN -->
+  <!-- Inkludera Pako (.gz) och JSZip (.zip) via CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@kenjiuno/msgreader@1.15.0/dist/MSGReader.min.js"></script>
+  <!-- Stabilare CDN-länk för MSGReader -->
+  <script src="https://unpkg.com/@kenjiuno/msgreader@1.15.0/dist/MSGReader.min.js"></script>
 
   <style>
     body {
@@ -221,16 +222,13 @@
       });
     }
 
-    // --- Hjälpfunktion för rekursiv uppackning av bilagors data ---
     async function parseByteArrayToXml(byteArray, hintFilename = '') {
       const name = hintFilename.toLowerCase();
 
-      // Om det är en .gz-fil
       if (name.endsWith('.gz') || (byteArray.length > 2 && byteArray[0] === 0x1f && byteArray[1] === 0x8b)) {
         return pako.inflate(byteArray, { to: 'string' });
       }
 
-      // Om det är en .zip-fil
       if (name.endsWith('.zip') || (byteArray.length > 2 && byteArray[0] === 0x50 && byteArray[1] === 0x4b)) {
         const zip = new JSZip();
         const zipContent = await zip.loadAsync(byteArray);
@@ -239,7 +237,6 @@
         return await zipContent.files[xmlFilename].async('string');
       }
 
-      // Annars provar vi att tolka som ren text (XML)
       const decoder = new TextDecoder('utf-8');
       const text = decoder.decode(byteArray);
       if (text.includes('<feedback>') || text.includes('<?xml')) {
@@ -249,18 +246,15 @@
       throw new Error(`Kunde inte tolka bilagans format (${hintFilename}).`);
     }
 
-    // --- Parser-motor för olika filformat (.xml, .gz, .zip, .eml, .msg) ---
     async function extractXmlFromFile(file) {
       const filename = file.name.toLowerCase();
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
 
-      // 1. GZ-format
       if (filename.endsWith('.gz')) {
         return pako.inflate(uint8Array, { to: 'string' });
       }
       
-      // 2. ZIP-format
       if (filename.endsWith('.zip')) {
         const zip = new JSZip();
         const zipContent = await zip.loadAsync(arrayBuffer);
@@ -269,7 +263,6 @@
         return await zipContent.files[xmlFilename].async('string');
       }
 
-      // 3. EML-format (textbaserat mail)
       if (filename.endsWith('.eml')) {
         const emlText = new TextDecoder().decode(arrayBuffer);
         const xmlMatch = emlText.match(/<\?xml[\s\S]*<\/feedback>/i);
@@ -277,9 +270,14 @@
         throw new Error('EML-filen kunde inte läsas. Kontrollera att bilagan är i .xml, .gz eller .zip-format.');
       }
 
-      // 4. MSG-format (Outlook OLE-objekt)
       if (filename.endsWith('.msg')) {
-        const msgReader = new MSGReader(arrayBuffer);
+        // Kontrollera att MSGReader är tillgängligt
+        const ReaderClass = window.MSGReader || window.MsgReader;
+        if (!ReaderClass) {
+          throw new Error('MSGReader-biblioteket kunde inte laddas från CDN.');
+        }
+
+        const msgReader = new ReaderClass(arrayBuffer);
         const msgData = msgReader.getFileData();
 
         if (msgData.error) {
@@ -290,11 +288,10 @@
           throw new Error('Ingen bilaga hittades i Outlook .msg-filen.');
         }
 
-        // Hitta första bilagan som ser ut att vara en DMARC-rapport (gz, zip, xml)
         const attachment = msgData.attachments.find(att => {
           const attName = (att.fileName || att.longFileName || '').toLowerCase();
           return attName.endsWith('.xml') || attName.endsWith('.gz') || attName.endsWith('.zip');
-        }) || msgData.attachments[0]; // Fallback till första bilagan
+        }) || msgData.attachments[0];
 
         const attName = attachment.fileName || attachment.longFileName || 'bilaga';
         const attData = msgReader.getAttachmentContent(attachment);
@@ -302,7 +299,6 @@
         return await parseByteArrayToXml(new Uint8Array(attData), attName);
       }
 
-      // 5. Standard: Ren XML-fil
       const decoder = new TextDecoder('utf-8');
       return decoder.decode(arrayBuffer);
     }
@@ -339,83 +335,4 @@
         const records = Array.from(xmlDoc.getElementsByTagName('record'));
         let totalMessages = 0;
 
-        tableBody.innerHTML = '';
-
-        records.forEach(record => {
-          const row = record.getElementsByTagName('row')[0];
-          const identifiers = record.getElementsByTagName('identifiers')[0];
-          const authResults = record.getElementsByTagName('auth_results')[0];
-          const policyEval = row ? row.getElementsByTagName('policy_evaluated')[0] : null;
-
-          const sourceIp = getText(row, 'source_ip');
-          const count = parseInt(getText(row, 'count', '0'), 10);
-          totalMessages += count;
-
-          const disposition = getText(policyEval, 'disposition', 'none');
-          const evalDkim = getText(policyEval, 'dkim');
-          const evalSpf = getText(policyEval, 'spf');
-          
-          const dmarcPassed = (evalDkim === 'pass' || evalSpf === 'pass') ? 'pass' : 'fail';
-          const headerFrom = getText(identifiers, 'header_from');
-
-          const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
-          const rawSpfResult = getText(spfNode, 'result', 'none');
-          const rawSpfDomain = getText(spfNode, 'domain', '');
-
-          const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
-          let dkimDetailsHtml = '';
-          let bestDkimResult = 'none';
-
-          if (dkimNodes.length > 0) {
-            bestDkimResult = getText(dkimNodes[0], 'result', 'none');
-            dkimDetailsHtml = dkimNodes.map(d => {
-              const res = getText(d, 'result');
-              const dom = getText(d, 'domain', '');
-              const sel = getText(d, 'selector', '');
-              return `${res} (${dom}${sel ? ' / ' + sel : ''})`;
-            }).join('<br>');
-          } else {
-            dkimDetailsHtml = 'Ingen signatur (none)';
-          }
-
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td class="mono"><strong>${sourceIp}</strong></td>
-            <td><strong>${count}</strong></td>
-            <td class="mono">${headerFrom}</td>
-            <td>${createBadge(disposition)}</td>
-            <td>${createBadge(dmarcPassed)}</td>
-            <td>
-              ${createBadge(rawSpfResult)}
-              <span class="sub-detail">${rawSpfDomain}</span>
-            </td>
-            <td>
-              ${createBadge(bestDkimResult)}
-              <span class="sub-detail">${dkimDetailsHtml}</span>
-            </td>
-          `;
-          tableBody.appendChild(tr);
-        });
-
-        metaSection.innerHTML = `
-          <div class="meta-item"><strong>Rapportör</strong><span>${orgName}</span></div>
-          <div class="meta-item"><strong>Din domän (Policy)</strong><span>${domain} (p=${pPolicy})</span></div>
-          <div class="meta-item"><strong>Totalt antal mail</strong><span>${totalMessages} st (${records.length} poster)</span></div>
-          <div class="meta-item"><strong>Period</strong><span>${beginDate} – ${endDate}</span></div>
-        `;
-
-        metaSection.classList.remove('hidden');
-        resultTable.classList.remove('hidden');
-        rawDetails.classList.remove('hidden');
-
-      } catch (err) {
-        if (err.name !== 'AbortError') {
-          console.error(err);
-          fileInfo.textContent = `Fel vid bearbetning: ${err.message}`;
-        }
-      }
-    });
-  </script>
-
-</body>
-</html>
+        tableBody.innerHTML
