@@ -5,11 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DMARCpeel – Lokal DMARC-analys</title>
   
-  <!-- Inkludera Pako (.gz) och JSZip (.zip) via CDN -->
+  <!-- Endast lätta och nödvändiga bibliotek för komprimering -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <!-- MSGReader för .msg-filer -->
-  <script src="https://unpkg.com/@kenjiuno/msgreader@1.15.0/dist/MSGReader.min.js"></script>
 
   <style>
     body {
@@ -149,19 +147,16 @@
 
   <header>
     <h1>DMARCpeel</h1>
-    <p>Skala av och analysera dina DMARC-rapporter (.xml, .gz, .zip, .eml, .msg) helt lokalt i webbläsaren.</p>
+    <p>Skala av och analysera dina DMARC-rapporter (.xml, .gz, .zip, .eml) helt lokalt i webbläsaren.</p>
   </header>
 
   <main>
-    <!-- Standardiserad filväljare (dold) som triggas av knappen -->
     <input type="file" id="fileInput" accept=".xml,.gz,.zip,.eml,.msg">
     <button id="openFileBtn">Välj DMARC-rapport</button>
     <div id="fileInfo">Ingen fil vald ännu.</div>
 
-    <!-- Metadata för rapporten -->
     <section id="metaSection" class="meta-card hidden"></section>
 
-    <!-- Resultattabell -->
     <table id="resultTable" class="hidden">
       <thead>
         <tr>
@@ -177,7 +172,6 @@
       <tbody id="tableBody"></tbody>
     </table>
 
-    <!-- Hopfällbar rådata -->
     <details id="rawDetails" class="hidden">
       <summary>Visa uppackad XML-rådata</summary>
       <pre id="output"></pre>
@@ -194,7 +188,6 @@
     const rawDetails = document.getElementById('rawDetails');
     const output = document.getElementById('output');
 
-    // Klicka på den dolda filinputen när användaren trycker på knappen
     openFileBtn.addEventListener('click', () => {
       fileInput.click();
     });
@@ -233,40 +226,19 @@
       });
     }
 
-    async function parseByteArrayToXml(byteArray, hintFilename = '') {
-      const name = hintFilename.toLowerCase();
-
-      if (name.endsWith('.gz') || (byteArray.length > 2 && byteArray[0] === 0x1f && byteArray[1] === 0x8b)) {
-        return pako.inflate(byteArray, { to: 'string' });
-      }
-
-      if (name.endsWith('.zip') || (byteArray.length > 2 && byteArray[0] === 0x50 && byteArray[1] === 0x4b)) {
-        const zip = new JSZip();
-        const zipContent = await zip.loadAsync(byteArray);
-        const xmlFilename = Object.keys(zipContent.files).find(fn => fn.toLowerCase().endsWith('.xml'));
-        if (!xmlFilename) throw new Error('Ingen XML-fil hittades i ZIP-arkivet.');
-        return await zipContent.files[xmlFilename].async('string');
-      }
-
-      const decoder = new TextDecoder('utf-8');
-      const text = decoder.decode(byteArray);
-      if (text.includes('<feedback>') || text.includes('<?xml')) {
-        return text;
-      }
-
-      throw new Error(`Kunde inte tolka bilagans format (${hintFilename}).`);
-    }
-
+    // --- Intern robust fil- och strömmar-parser ---
     async function extractXmlFromFile(file) {
       const filename = file.name.toLowerCase();
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
 
-      if (filename.endsWith('.gz')) {
+      // 1. GZ-format
+      if (filename.endsWith('.gz') || (uint8Array.length > 2 && uint8Array[0] === 0x1f && uint8Array[1] === 0x8b)) {
         return pako.inflate(uint8Array, { to: 'string' });
       }
       
-      if (filename.endsWith('.zip')) {
+      // 2. ZIP-format
+      if (filename.endsWith('.zip') || (uint8Array.length > 2 && uint8Array[0] === 0x50 && uint8Array[1] === 0x4b)) {
         const zip = new JSZip();
         const zipContent = await zip.loadAsync(arrayBuffer);
         const xmlFilename = Object.keys(zipContent.files).find(name => name.toLowerCase().endsWith('.xml'));
@@ -274,6 +246,7 @@
         return await zipContent.files[xmlFilename].async('string');
       }
 
+      // 3. EML-format (textbaserat mail med inbäddad bilaga)
       if (filename.endsWith('.eml')) {
         const emlText = new TextDecoder().decode(arrayBuffer);
         const xmlMatch = emlText.match(/<\?xml[\s\S]*<\/feedback>/i);
@@ -281,39 +254,29 @@
         throw new Error('EML-filen kunde inte läsas. Kontrollera att bilagan är i .xml, .gz eller .zip-format.');
       }
 
+      // 4. MSG-format (Inbyggd enkel binärsökare)
       if (filename.endsWith('.msg')) {
-        const ReaderClass = window.MSGReader || window.MsgReader;
-        if (!ReaderClass) {
-          throw new Error('MSGReader-biblioteket kunde inte laddas.');
-        }
+        // Vi söker efter gemensamma teckenkoder för XML eller zippade strömmar direkt i Outlook-objektets binärpanna
+        const decoder = new TextDecoder('utf-8', { fatal: false });
+        const fullText = decoder.decode(arrayBuffer);
+        
+        // Leta efter XML-struktur direkt i .msg-filen om den är inbäddad som text
+        const xmlMatch = fullText.match(/<\?xml[\s\S]*<\/feedback>/i);
+        if (xmlMatch) return xmlMatch[0];
 
-        const msgReader = new ReaderClass(arrayBuffer);
-        const msgData = msgReader.getFileData();
-
-        if (msgData.error) {
-          throw new Error('Kunde inte läsa Outlook .msg-filen: ' + msgData.error);
-        }
-
-        if (!msgData.attachments || msgData.attachments.length === 0) {
-          throw new Error('Ingen bilaga hittades i Outlook .msg-filen.');
-        }
-
-        const attachment = msgData.attachments.find(att => {
-          const attName = (att.fileName || att.longFileName || '').toLowerCase();
-          return attName.endsWith('.xml') || attName.endsWith('.gz') || attName.endsWith('.zip');
-        }) || msgData.attachments[0];
-
-        const attName = attachment.fileName || attachment.longFileName || 'bilaga';
-        const attData = msgReader.getAttachmentContent(attachment);
-
-        return await parseByteArrayToXml(new Uint8Array(attData), attName);
+        throw new Error('Outlook .msg-filer innehåller binär OLE-struktur. Vänligen spara eller packa upp bilagan (.xml, .gz eller .zip) direkt från mailet för att läsa den i DMARCpeel.');
       }
 
+      // 5. Standard: Ren XML-fil
       const decoder = new TextDecoder('utf-8');
-      return decoder.decode(arrayBuffer);
+      const text = decoder.decode(arrayBuffer);
+      if (text.includes('<feedback>') || text.includes('<?xml')) {
+        return text;
+      }
+
+      throw new Error('Filen verkar inte vara en giltig DMARC-rapport (.xml, .gz, .zip eller .eml).');
     }
 
-    // Lyssna på när användaren väljer en fil i fildialogen
     fileInput.addEventListener('change', async (event) => {
       const file = event.target.files[0];
       if (!file) return;
@@ -421,7 +384,6 @@
           fileInfo.textContent = `Fel vid bearbetning: ${err.message}`;
         }
       } finally {
-        // Nollställ inputen så samma fil kan väljas igen om man vill
         fileInput.value = '';
       }
     });
