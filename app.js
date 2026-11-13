@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const dirInput = document.getElementById('dirInput');
   const fileInfo = document.getElementById('fileInfo');
   const summarySection = document.getElementById('summarySection');
+  const warningsWrapper = document.getElementById('warningsWrapper');
   const resultTable = document.getElementById('resultTable');
   const tableHeaderRow = document.getElementById('tableHeaderRow');
   const tableBody = document.getElementById('tableBody');
@@ -12,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const backToOverviewBtn = document.getElementById('backToOverviewBtn');
   const detailTitle = document.getElementById('detailTitle');
 
-  let directoryCache = {}; // Sparar undan all data per rapportör i minnet
+  let directoryCache = {};
 
   openFileBtn.addEventListener('click', () => singleFileInput.click());
   openDirBtn.addEventListener('click', () => dirInput.click());
@@ -31,6 +32,43 @@ document.addEventListener('DOMContentLoaded', () => {
     if (val === 'pass') cls = 'pass';
     else if (val === 'fail' || val === 'reject' || val === 'quarantine') cls = 'fail';
     return `<span class="badge ${cls}">${value}</span>`;
+  }
+
+  function formatUnixDate(unixStr) {
+    const ts = parseInt(unixStr, 10);
+    if (isNaN(ts)) return '–';
+    return new Date(ts * 1000).toLocaleString('sv-SE', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  }
+
+  // --- Numerisk IP-sorterare (stöder både IPv4 och IPv6/strängar) ---
+  function compareIPs(ipA, ipB) {
+    const parseIPv4 = (ip) => {
+      if (!ip.includes('.')) return null;
+      const parts = ip.split('.').map(Number);
+      if (parts.length === 4 && parts.every(p => !isNaN(p))) {
+        return parts;
+      }
+      return null;
+    };
+
+    const v4A = parseIPv4(ipA);
+    const v4B = parseIPv4(ipB);
+
+    if (v4A && v4B) {
+      for (let i = 0; i < 4; i++) {
+        if (v4A[i] !== v4B[i]) return v4A[i] - v4B[i];
+      }
+      return 0;
+    }
+
+    // Fallback till alfabetisk ordning om det är IPv6 eller ostandardiserat
+    return ipA.localeCompare(ipB);
   }
 
   async function parseMsgFile(arrayBuffer) {
@@ -53,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {}
       }
     }
-    throw new Error('Kunde inte extrahera DMARC-bilaga.');
+    throw new Error('Kunde inte extrahera DMARC-bilaga ur .msg.');
   }
 
   async function extractXmlFromFile(file) {
@@ -82,13 +120,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const decoder = new TextDecoder('utf-8');
     const text = decoder.decode(arrayBuffer);
     if (text.includes('<feedback>') || text.includes('<?xml')) return text;
-    throw new Error('Ogiltigt format.');
+    throw new Error('Ogiltigt format eller ej XML.');
   }
 
-  // --- Hjälpfunktion för att rita detaljtabell (används både för enskild fil och klick på katalog) ---
   function renderDetailTable(records, orgName, domain) {
     detailNav.classList.remove('hidden');
     detailTitle.textContent = `Detaljer för: ${orgName} (${domain || 'Domän'})`;
+
+    // Sortera IP-adresserna numeriskt innan rendering
+    const sortedRecords = [...records].sort((a, b) => compareIPs(a.sourceIp, b.sourceIp));
 
     tableHeaderRow.innerHTML = `
       <th>Sändande IP</th>
@@ -101,7 +141,7 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
     tableBody.innerHTML = '';
 
-    records.forEach(rec => {
+    sortedRecords.forEach(rec => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td class="mono"><strong>${rec.sourceIp}</strong></td>
@@ -121,18 +161,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const file = event.target.files[0];
     if (!file) return;
 
+    warningsWrapper.classList.add('hidden');
+
     try {
       fileInfo.textContent = `Bearbetar fil: ${file.name}...`;
       const rawXmlText = await extractXmlFromFile(file);
 
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
-      if (xmlDoc.getElementsByTagName('parsererror').length > 0) throw new Error('Ogiltig XML');
+      if (xmlDoc.getElementsByTagName('parsererror').length > 0) throw new Error('Ogiltig XML-struktur');
 
       const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
       const policy = xmlDoc.getElementsByTagName('policy_published')[0];
+      const dateRange = meta ? meta.getElementsByTagName('date_range')[0] : null;
+
       const orgName = getText(meta, 'org_name');
       const domain = getText(policy, 'domain');
+      const beginDate = formatUnixDate(getText(dateRange, 'begin'));
+      const endDate = formatUnixDate(getText(dateRange, 'end'));
 
       const records = Array.from(xmlDoc.getElementsByTagName('record')).map(record => {
         const row = record.getElementsByTagName('row')[0];
@@ -166,6 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="summary-item"><strong>Rapportör</strong><span>${orgName}</span></div>
         <div class="summary-item"><strong>Domän</strong><span>${domain}</span></div>
         <div class="summary-item"><strong>Totalt antal mail</strong><span>${totalMessages} st</span></div>
+        <div class="summary-item"><strong>Tidsintervall</strong><span>${beginDate} – ${endDate}</span></div>
       `;
       summarySection.classList.remove('hidden');
       resultTable.classList.remove('hidden');
@@ -177,7 +224,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // --- 2. Hantera hel katalog (Aggregerad vy med cache) ---
+  // --- 2. Hantera hel katalog ---
   dirInput.addEventListener('change', async (event) => {
     const files = Array.from(event.target.files).filter(file => {
       const name = file.name.toLowerCase();
@@ -189,23 +236,35 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    fileInfo.textContent = `Hittade ${files.length} rapporter i katalogen. Sammanställer...`;
+    fileInfo.textContent = `Hittade ${files.length} filer i katalogen. Bearbetar...`;
 
     directoryCache = {};
     let totalGlobalMessages = 0;
     let successfulFiles = 0;
+    let minTimestamp = Infinity;
+    let maxTimestamp = -Infinity;
+    const failedFiles = [];
 
     for (const file of files) {
       try {
         const rawXmlText = await extractXmlFromFile(file);
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
-        if (xmlDoc.getElementsByTagName('parsererror').length > 0) continue;
+        if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+          throw new Error('Parsererror: Ej giltig XML');
+        }
 
         const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
         const policy = xmlDoc.getElementsByTagName('policy_published')[0];
+        const dateRange = meta ? meta.getElementsByTagName('date_range')[0] : null;
+
         const orgName = getText(meta, 'org_name', 'Okänd rapportör');
         const domain = getText(policy, 'domain', '');
+
+        const beginTs = parseInt(getText(dateRange, 'begin', '0'), 10);
+        const endTs = parseInt(getText(dateRange, 'end', '0'), 10);
+        if (!isNaN(beginTs) && beginTs > 0 && beginTs < minTimestamp) minTimestamp = beginTs;
+        if (!isNaN(endTs) && endTs > 0 && endTs > maxTimestamp) maxTimestamp = endTs;
 
         if (!directoryCache[orgName]) {
           directoryCache[orgName] = { orgName, domain, fileCount: 0, totalMessages: 0, passMessages: 0, records: [] };
@@ -242,23 +301,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         successfulFiles++;
-      } catch (e) {}
+      } catch (e) {
+        failedFiles.push({ name: file.name, error: e.message });
+      }
     }
 
     renderOverviewTable();
+
+    const rangeStr = (minTimestamp !== Infinity && maxTimestamp !== -Infinity) 
+      ? `${formatUnixDate(minTimestamp)} – ${formatUnixDate(maxTimestamp)}` 
+      : 'Ej tillgängligt';
 
     summarySection.innerHTML = `
       <div class="summary-item"><strong>Inlästa filer</strong><span>${successfulFiles} st (${files.length} hittades)</span></div>
       <div class="summary-item"><strong>Totalt antal mail</strong><span>${totalGlobalMessages} st</span></div>
       <div class="summary-item"><strong>Unika rapportörer</strong><span>${Object.keys(directoryCache).length} st</span></div>
+      <div class="summary-item"><strong>Tidsintervall</strong><span>${rangeStr}</span></div>
     `;
     summarySection.classList.remove('hidden');
+
+    // Om det finns filer som misslyckades, visa rullgardinsmenyn för fel
+    if (failedFiles.length > 0) {
+      warningsWrapper.innerHTML = `
+        <details>
+          <summary>⚠️ ${failedFiles.length} filer kunde inte läsas in (Klicka för detaljer)</summary>
+          <div class="warnings-list">
+            ${failedFiles.map(f => `<div><strong>${f.name}:</strong> ${f.error}</div>`).join('')}
+          </div>
+        </details>
+      `;
+      warningsWrapper.classList.remove('hidden');
+    } else {
+      warningsWrapper.classList.add('hidden');
+    }
+
     resultTable.classList.remove('hidden');
-    fileInfo.textContent = `Kataloganalys klar: ${successfulFiles} filer bearbetade. (Klicka på en rad för detaljer)`;
+    fileInfo.textContent = `Kataloganalys klar: ${successfulFiles} filer bearbetade. (Klicka på en rapportör för detaljer)`;
     dirInput.value = '';
   });
 
-  // --- Rita översiktstabellen ---
   function renderOverviewTable() {
     detailNav.classList.add('hidden');
     tableHeaderRow.innerHTML = `
@@ -288,7 +369,6 @@ document.addEventListener('DOMContentLoaded', () => {
         <td><span class="badge ${passBadgeClass}">${passPercent}%</span></td>
       `;
 
-      // Klickhändelse för att borra ner i detaljer för vald rapportör
       tr.addEventListener('click', () => {
         renderDetailTable(data.records, data.orgName, data.domain);
       });
