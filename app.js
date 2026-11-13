@@ -60,7 +60,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return ipA.localeCompare(ipB);
   }
 
-  // Extract both raw authentication results and policy-evaluated alignment outcomes
   function parseRecordNode(record) {
     const row = record.getElementsByTagName('row')[0];
     const identifiers = record.getElementsByTagName('identifiers')[0];
@@ -71,14 +70,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const count = parseInt(getText(row, 'count', '0'), 10);
     const disposition = getText(policyEval, 'disposition', 'none');
 
-    // Policy-evaluated alignment outcomes (DMARC perspective)
     const spfAligned = getText(policyEval, 'spf', 'fail');
     const dkimAligned = getText(policyEval, 'dkim', 'fail');
     const dmarcPassed = (dkimAligned === 'pass' || spfAligned === 'pass') ? 'pass' : 'fail';
 
     const headerFrom = getText(identifiers, 'header_from');
 
-    // Raw authentication outcomes (<auth_results>)
     const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
     const rawSpfResult = getText(spfNode, 'result', 'none');
 
@@ -102,7 +99,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  // Aggregate records only when IP, Header From, and all security/alignment outcomes match
   function aggregateRecords(records) {
     const map = new Map();
 
@@ -128,27 +124,47 @@ document.addEventListener('DOMContentLoaded', () => {
     return Array.from(map.values());
   }
 
+  // --- Förbättrad MSG-parser med rekursiv GZIP-sökning ---
   async function parseMsgFile(arrayBuffer) {
     const uint8 = new Uint8Array(arrayBuffer);
     const decoder = new TextDecoder('utf-8', { fatal: false });
     const fullText = decoder.decode(arrayBuffer);
+    
+    // 1. Kolla om XML ligger direkt i textströmmen
     const xmlMatch = fullText.match(/<\?xml[\s\S]*<\/feedback>/i) || fullText.match(/<feedback[\s\S]*<\/feedback>/i);
     if (xmlMatch) return xmlMatch[0];
 
+    // 2. Sök igenom ALLA förekomster av GZIP-signaturer (0x1f 0x8b) i binärdatan
     for (let i = 0; i < uint8.length - 4; i++) {
       if (uint8[i] === 0x1f && uint8[i+1] === 0x8b) {
-        try { return pako.inflate(uint8.slice(i), { to: 'string' }); } catch (e) {}
+        try {
+          const inflated = pako.inflate(uint8.slice(i), { to: 'string' });
+          if (inflated && (inflated.includes('<feedback>') || inflated.includes('<?xml'))) {
+            return inflated;
+          }
+        } catch (e) {
+          // Ignorera felaktiga matchningar och fortsätt leta
+        }
       }
+    }
+
+    // 3. Kolla efter inbäddade ZIP-arkiv
+    for (let i = 0; i < uint8.length - 4; i++) {
       if (uint8[i] === 0x50 && uint8[i+1] === 0x4b && uint8[i+2] === 0x03 && uint8[i+3] === 0x04) {
         try {
           const zip = new JSZip();
           const zipContent = await zip.loadAsync(uint8.slice(i));
           const xmlFilename = Object.keys(zipContent.files).find(name => name.toLowerCase().endsWith('.xml'));
-          if (xmlFilename) return await zipContent.files[xmlFilename].async('string');
-        } catch (e) {}
+          if (xmlFilename) {
+            return await zipContent.files[xmlFilename].async('string');
+          }
+        } catch (e) {
+          // Ignorera och fortsätt
+        }
       }
     }
-    throw new Error('Could not extract DMARC attachment from .msg file.');
+
+    throw new Error('Could not extract valid DMARC XML or compressed attachment from .msg file.');
   }
 
   async function extractXmlFromFile(file) {
