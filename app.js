@@ -27,6 +27,46 @@ document.addEventListener('DOMContentLoaded', () => {
     return `<span class="badge ${cls}">${value}</span>`;
   }
 
+  // --- Robust intern MSG/OLE- och strömpares---
+  async function parseMsgFile(arrayBuffer) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    
+    // 1. Kolla om rapporten ligger som ren text/XML inbäddad
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const fullText = decoder.decode(arrayBuffer);
+    const xmlMatch = fullText.match(/<\?xml[\s\S]*<\/feedback>/i) || fullText.match(/<feedback[\s\S]*<\/feedback>/i);
+    if (xmlMatch) return xmlMatch[0];
+
+    // 2. Skanna igenom binärdatan efter GZ (1f 8b) eller ZIP (50 4b 03 04) signaturer
+    for (let i = 0; i < uint8.length - 4; i++) {
+      // GZ signatur
+      if (uint8[i] === 0x1f && uint8[i+1] === 0x8b) {
+        const sliced = uint8.slice(i);
+        try {
+          return pako.inflate(sliced, { to: 'string' });
+        } catch (e) {
+          // Fortsätt leta
+        }
+      }
+      // ZIP signatur (PK)
+      if (uint8[i] === 0x50 && uint8[i+1] === 0x4b && uint8[i+2] === 0x03 && uint8[i+3] === 0x04) {
+        const sliced = uint8.slice(i);
+        try {
+          const zip = new JSZip();
+          const zipContent = await zip.loadAsync(sliced);
+          const xmlFilename = Object.keys(zipContent.files).find(name => name.toLowerCase().endsWith('.xml'));
+          if (xmlFilename) {
+            return await zipContent.files[xmlFilename].async('string');
+          }
+        } catch (e) {
+          // Fortsätt leta
+        }
+      }
+    }
+
+    throw new Error('Kunde inte extrahera DMARC-bilaga ur Outlook .msg-filen.');
+  }
+
   // --- Intern uppackningsmotor ---
   async function extractXmlFromFile(file) {
     const filename = file.name.toLowerCase();
@@ -53,11 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     if (filename.endsWith('.msg')) {
-      const decoder = new TextDecoder('utf-8', { fatal: false });
-      const fullText = decoder.decode(arrayBuffer);
-      const xmlMatch = fullText.match(/<\?xml[\s\S]*<\/feedback>/i);
-      if (xmlMatch) return xmlMatch[0];
-      throw new Error('Kunde inte extrahera MSG.');
+      return await parseMsgFile(arrayBuffer);
     }
 
     const decoder = new TextDecoder('utf-8');
@@ -192,7 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         successfulFiles++;
       } catch (e) {
-        // Hoppa över skadade filer tyst i katalogvyn
+        // Hoppa över filer som inte kunde packas upp
       }
     }
 
