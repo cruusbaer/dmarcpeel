@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DMARCpeel – Kataloganalys</title>
+  <title>DMARCpeel – Local DMARC Report Analyzer</title>
   
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -11,7 +11,7 @@
   <style>
     body {
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 1200px;
+      max-width: 1280px;
       margin: 2rem auto;
       padding: 0 1rem;
       line-height: 1.5;
@@ -108,10 +108,10 @@
       overflow: hidden;
       border: 1px solid #e2e8f0;
       margin-top: 1rem;
-      font-size: 0.9rem;
+      font-size: 0.875rem;
     }
     th, td {
-      padding: 0.75rem 1.25rem;
+      padding: 0.75rem 1rem;
       text-align: left;
       border-bottom: 1px solid #e2e8f0;
     }
@@ -119,6 +119,7 @@
       background-color: #f1f5f9;
       font-weight: 600;
       color: #334155;
+      white-space: nowrap;
     }
     tr.clickable-row {
       cursor: pointer;
@@ -136,7 +137,7 @@
       display: inline-block;
       padding: 0.15rem 0.5rem;
       border-radius: 4px;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       font-weight: 600;
       text-transform: uppercase;
     }
@@ -170,26 +171,26 @@
 
   <header>
     <h1>DMARCpeel</h1>
-    <p>Analysera en enskild rapport eller välj en hel katalog med DMARC-rapporter helt lokalt.</p>
+    <p>Analyze a single DMARC report or an entire directory locally in your browser.</p>
   </header>
 
   <main>
     <div class="btn-group">
       <input type="file" id="singleFileInput" accept=".xml,.gz,.zip,.eml,.msg">
-      <button id="openFileBtn">Välj enskild rapport</button>
+      <button id="openFileBtn">Select Single Report</button>
 
       <input type="file" id="dirInput" webkitdirectory directory multiple>
-      <button id="openDirBtn" class="secondary">Välj hel katalog</button>
+      <button id="openDirBtn" class="secondary">Select Directory</button>
     </div>
 
-    <div id="fileInfo">Ingen fil eller katalog vald ännu.</div>
+    <div id="fileInfo">No file or directory selected yet.</div>
 
     <section id="summarySection" class="summary-card hidden"></section>
     
     <div id="warningsWrapper" class="hidden"></div>
 
     <div id="detailNav" class="nav-bar hidden">
-      <button id="backToOverviewBtn" class="secondary">← Tillbaka till översikt</button>
+      <button id="backToOverviewBtn" class="secondary">← Back to Overview</button>
       <span id="detailTitle" style="font-weight: 600; color: #334155;"></span>
     </div>
 
@@ -201,7 +202,7 @@
     </table>
 
     <details id="rawDetails" class="hidden">
-      <summary>Visa uppackad XML-rådata</summary>
+      <summary>View Raw Extracted XML</summary>
       <pre id="output"></pre>
     </details>
   </main>
