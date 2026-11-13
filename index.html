@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DMARCpeel – Lokal DMARC-analys</title>
+  <title>DMARCpeel – Kataloganalys</title>
   
-  <!-- Lätta och nödvändiga komprimeringsbibliotek via CDN -->
+  <!-- Komprimeringsbibliotek -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
@@ -22,6 +22,12 @@
     header {
       margin-bottom: 1.5rem;
     }
+    .btn-group {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
     button {
       background-color: #0f172a;
       color: #ffffff;
@@ -34,7 +40,13 @@
     button:hover {
       background-color: #334155;
     }
-    #fileInput {
+    button.secondary {
+      background-color: #475569;
+    }
+    button.secondary:hover {
+      background-color: #64748b;
+    }
+    input[type="file"] {
       display: none;
     }
     #fileInfo {
@@ -42,7 +54,7 @@
       font-size: 0.9rem;
       color: #64748b;
     }
-    .meta-card {
+    .summary-card {
       background: #ffffff;
       border: 1px solid #e2e8f0;
       border-radius: 8px;
@@ -52,14 +64,14 @@
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
       gap: 1rem;
     }
-    .meta-item strong {
+    .summary-item strong {
       display: block;
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: #64748b;
     }
-    .meta-item span {
+    .summary-item span {
       font-size: 1.05rem;
       font-weight: 600;
     }
@@ -100,85 +112,46 @@
       font-weight: 600;
       text-transform: uppercase;
     }
-    .pass {
-      background-color: #dcfce7;
-      color: #166534;
-    }
-    .fail {
-      background-color: #fee2e2;
-      color: #991b1b;
-    }
-    .neutral {
-      background-color: #f1f5f9;
-      color: #475569;
-    }
-    .sub-detail {
-      display: block;
-      font-size: 0.78rem;
-      color: #64748b;
-      margin-top: 0.2rem;
-    }
-    details {
-      margin-top: 2rem;
-    }
-    summary {
-      cursor: pointer;
-      font-weight: 600;
-      color: #475569;
-    }
-    pre {
-      background-color: #1e293b;
-      color: #e2e8f0;
-      padding: 1rem;
-      border-radius: 8px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin-top: 0.75rem;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.85rem;
-    }
-    .hidden {
-      display: none;
-    }
+    .pass { background-color: #dcfce7; color: #166534; }
+    .fail { background-color: #fee2e2; color: #991b1b; }
+    .neutral { background-color: #f1f5f9; color: #475569; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
 
   <header>
     <h1>DMARCpeel</h1>
-    <p>Skala av och analysera dina DMARC-rapporter (.xml, .gz, .zip, .eml, .msg) helt lokalt i webbläsaren.</p>
+    <p>Analysera en enskild rapport eller välj en hel katalog med DMARC-rapporter helt lokalt.</p>
   </header>
 
   <main>
-    <input type="file" id="fileInput" accept=".xml,.gz,.zip,.eml,.msg">
-    <button id="openFileBtn">Välj DMARC-rapport</button>
-    <div id="fileInfo">Ingen fil vald ännu.</div>
+    <div class="btn-group">
+      <!-- Enskild fil -->
+      <input type="file" id="singleFileInput" accept=".xml,.gz,.zip,.eml,.msg">
+      <button id="openFileBtn">Välj enskild rapport</button>
 
-    <section id="metaSection" class="meta-card hidden"></section>
+      <!-- Hel katalog -->
+      <input type="file" id="dirInput" webkitdirectory directory multiple>
+      <button id="openDirBtn" class="secondary">Välj hel katalog</button>
+    </div>
 
+    <div id="fileInfo">Ingen fil eller katalog vald ännu.</div>
+
+    <!-- Sammanfattning -->
+    <section id="summarySection" class="summary-card hidden"></section>
+
+    <!-- Huvudtabell -->
     <table id="resultTable" class="hidden">
       <thead>
-        <tr>
-          <th>Sändande IP</th>
-          <th>Antal</th>
-          <th>Header From</th>
-          <th>Åtgärd (Disposition)</th>
-          <th>DMARC-utfall</th>
-          <th>SPF (Tekniskt)</th>
-          <th>DKIM (Tekniskt)</th>
+        <tr id="tableHeaderRow">
+          <!-- Dynamiska kolumner beroende på enskild fil eller katalog -->
         </tr>
       </thead>
       <tbody id="tableBody"></tbody>
     </table>
-
-    <details id="rawDetails" class="hidden">
-      <summary>Visa uppackad XML-rådata</summary>
-      <pre id="output"></pre>
-    </details>
   </main>
 
-  <!-- Ladda vår egna logikfil -->
   <script src="app.js"></script>
 </body>
 </html>
