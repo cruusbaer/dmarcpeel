@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DMARCpeel – Lokal DMARC-analys</title>
   
-  <!-- Inkludera Pako (för .gz) och JSZip (för .zip) via CDN -->
+  <!-- Inkludera Pako (.gz), JSZip (.zip) och @kenjiuno/msgreader (.msg) via CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@kenjiuno/msgreader@1.15.0/dist/MSGReader.min.js"></script>
 
   <style>
     body {
@@ -71,7 +72,7 @@
       font-size: 0.9rem;
     }
     th, td {
-      padding: 0.75rem 1rem;
+      padding: 0.75rem 1.25rem;
       text-align: left;
       border-bottom: 1px solid #e2e8f0;
     }
@@ -144,7 +145,7 @@
 
   <header>
     <h1>DMARCpeel</h1>
-    <p>Skala av och analysera dina DMARC-rapporter (.xml, .gz, .zip, .eml) helt lokalt i webbläsaren.</p>
+    <p>Skala av och analysera dina DMARC-rapporter (.xml, .gz, .zip, .eml, .msg) helt lokalt i webbläsaren.</p>
   </header>
 
   <main>
@@ -220,15 +221,46 @@
       });
     }
 
-    // --- Parser-motor för olika filformat ---
+    // --- Hjälpfunktion för rekursiv uppackning av bilagors data ---
+    async function parseByteArrayToXml(byteArray, hintFilename = '') {
+      const name = hintFilename.toLowerCase();
+
+      // Om det är en .gz-fil
+      if (name.endsWith('.gz') || (byteArray.length > 2 && byteArray[0] === 0x1f && byteArray[1] === 0x8b)) {
+        return pako.inflate(byteArray, { to: 'string' });
+      }
+
+      // Om det är en .zip-fil
+      if (name.endsWith('.zip') || (byteArray.length > 2 && byteArray[0] === 0x50 && byteArray[1] === 0x4b)) {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(byteArray);
+        const xmlFilename = Object.keys(zipContent.files).find(fn => fn.toLowerCase().endsWith('.xml'));
+        if (!xmlFilename) throw new Error('Ingen XML-fil hittades i ZIP-arkivet.');
+        return await zipContent.files[xmlFilename].async('string');
+      }
+
+      // Annars provar vi att tolka som ren text (XML)
+      const decoder = new TextDecoder('utf-8');
+      const text = decoder.decode(byteArray);
+      if (text.includes('<feedback>') || text.includes('<?xml')) {
+        return text;
+      }
+
+      throw new Error(`Kunde inte tolka bilagans format (${hintFilename}).`);
+    }
+
+    // --- Parser-motor för olika filformat (.xml, .gz, .zip, .eml, .msg) ---
     async function extractXmlFromFile(file) {
       const filename = file.name.toLowerCase();
       const arrayBuffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
 
+      // 1. GZ-format
       if (filename.endsWith('.gz')) {
-        return pako.inflate(new Uint8Array(arrayBuffer), { to: 'string' });
+        return pako.inflate(uint8Array, { to: 'string' });
       }
       
+      // 2. ZIP-format
       if (filename.endsWith('.zip')) {
         const zip = new JSZip();
         const zipContent = await zip.loadAsync(arrayBuffer);
@@ -237,6 +269,7 @@
         return await zipContent.files[xmlFilename].async('string');
       }
 
+      // 3. EML-format (textbaserat mail)
       if (filename.endsWith('.eml')) {
         const emlText = new TextDecoder().decode(arrayBuffer);
         const xmlMatch = emlText.match(/<\?xml[\s\S]*<\/feedback>/i);
@@ -244,6 +277,32 @@
         throw new Error('EML-filen kunde inte läsas. Kontrollera att bilagan är i .xml, .gz eller .zip-format.');
       }
 
+      // 4. MSG-format (Outlook OLE-objekt)
+      if (filename.endsWith('.msg')) {
+        const msgReader = new MSGReader(arrayBuffer);
+        const msgData = msgReader.getFileData();
+
+        if (msgData.error) {
+          throw new Error('Kunde inte läsa Outlook .msg-filen: ' + msgData.error);
+        }
+
+        if (!msgData.attachments || msgData.attachments.length === 0) {
+          throw new Error('Ingen bilaga hittades i Outlook .msg-filen.');
+        }
+
+        // Hitta första bilagan som ser ut att vara en DMARC-rapport (gz, zip, xml)
+        const attachment = msgData.attachments.find(att => {
+          const attName = (att.fileName || att.longFileName || '').toLowerCase();
+          return attName.endsWith('.xml') || attName.endsWith('.gz') || attName.endsWith('.zip');
+        }) || msgData.attachments[0]; // Fallback till första bilagan
+
+        const attName = attachment.fileName || attachment.longFileName || 'bilaga';
+        const attData = msgReader.getAttachmentContent(attachment);
+
+        return await parseByteArrayToXml(new Uint8Array(attData), attName);
+      }
+
+      // 5. Standard: Ren XML-fil
       const decoder = new TextDecoder('utf-8');
       return decoder.decode(arrayBuffer);
     }
@@ -296,17 +355,13 @@
           const evalDkim = getText(policyEval, 'dkim');
           const evalSpf = getText(policyEval, 'spf');
           
-          // DMARC godkänt om antingen dkim eller spf är pass i policy_evaluated
           const dmarcPassed = (evalDkim === 'pass' || evalSpf === 'pass') ? 'pass' : 'fail';
-
           const headerFrom = getText(identifiers, 'header_from');
 
-          // Rå SPF
           const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
           const rawSpfResult = getText(spfNode, 'result', 'none');
           const rawSpfDomain = getText(spfNode, 'domain', '');
 
-          // Rå DKIM
           const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
           let dkimDetailsHtml = '';
           let bestDkimResult = 'none';
