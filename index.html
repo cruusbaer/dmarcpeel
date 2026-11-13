@@ -143,6 +143,26 @@
     .pass { background-color: #dcfce7; color: #166534; }
     .fail { background-color: #fee2e2; color: #991b1b; }
     .neutral { background-color: #f1f5f9; color: #475569; }
+    details {
+      margin-top: 2rem;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #475569;
+    }
+    pre {
+      background-color: #1e293b;
+      color: #e2e8f0;
+      padding: 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 0.75rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+    }
     .hidden { display: none; }
   </style>
 </head>
@@ -166,7 +186,6 @@
 
     <section id="summarySection" class="summary-card hidden"></section>
     
-    <!-- Fällbar lista för filer som inte kunde läsas -->
     <div id="warningsWrapper" class="hidden"></div>
 
     <div id="detailNav" class="nav-bar hidden">
@@ -180,6 +199,11 @@
       </thead>
       <tbody id="tableBody"></tbody>
     </table>
+
+    <details id="rawDetails" class="hidden">
+      <summary>Visa uppackad XML-rådata</summary>
+      <pre id="output"></pre>
+    </details>
   </main>
 
   <script src="app.js"></script>
