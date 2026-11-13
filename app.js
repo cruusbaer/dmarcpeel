@@ -12,6 +12,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const detailNav = document.getElementById('detailNav');
   const backToOverviewBtn = document.getElementById('backToOverviewBtn');
   const detailTitle = document.getElementById('detailTitle');
+  const rawDetails = document.getElementById('rawDetails');
+  const output = document.getElementById('output');
 
   let directoryCache = {};
 
@@ -46,29 +48,41 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // --- Numerisk IP-sorterare (stöder både IPv4 och IPv6/strängar) ---
   function compareIPs(ipA, ipB) {
     const parseIPv4 = (ip) => {
       if (!ip.includes('.')) return null;
       const parts = ip.split('.').map(Number);
-      if (parts.length === 4 && parts.every(p => !isNaN(p))) {
-        return parts;
-      }
+      if (parts.length === 4 && parts.every(p => !isNaN(p))) return parts;
       return null;
     };
-
     const v4A = parseIPv4(ipA);
     const v4B = parseIPv4(ipB);
-
     if (v4A && v4B) {
       for (let i = 0; i < 4; i++) {
         if (v4A[i] !== v4B[i]) return v4A[i] - v4B[i];
       }
       return 0;
     }
-
-    // Fallback till alfabetisk ordning om det är IPv6 eller ostandardiserat
     return ipA.localeCompare(ipB);
+  }
+
+  // --- Funktion för att aggregera rader med samma IP och identiskt utfall ---
+  function aggregateRecords(records) {
+    const map = new Map();
+
+    records.forEach(rec => {
+      // Skapa en unik nyckel baserat på IP samt alla statuskolumner
+      const key = `${rec.sourceIp}|${rec.headerFrom}|${rec.disposition}|${rec.dmarcPassed}|${rec.rawSpfResult}|${rec.bestDkimResult}`;
+
+      if (map.has(key)) {
+        map.get(key).count += rec.count;
+      } else {
+        // Skapa en kopia av objektet så vi inte muterar originalet
+        map.set(key, { ...rec });
+      }
+    });
+
+    return Array.from(map.values());
   }
 
   async function parseMsgFile(arrayBuffer) {
@@ -127,8 +141,11 @@ document.addEventListener('DOMContentLoaded', () => {
     detailNav.classList.remove('hidden');
     detailTitle.textContent = `Detaljer för: ${orgName} (${domain || 'Domän'})`;
 
-    // Sortera IP-adresserna numeriskt innan rendering
-    const sortedRecords = [...records].sort((a, b) => compareIPs(a.sourceIp, b.sourceIp));
+    // 1. Aggregera rader med identiskt utfall och IP
+    const aggregated = aggregateRecords(records);
+
+    // 2. Sortera numeriskt på IP
+    const sortedRecords = [...aggregated].sort((a, b) => compareIPs(a.sourceIp, b.sourceIp));
 
     tableHeaderRow.innerHTML = `
       <th>Sändande IP</th>
@@ -166,6 +183,10 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       fileInfo.textContent = `Bearbetar fil: ${file.name}...`;
       const rawXmlText = await extractXmlFromFile(file);
+
+      // Visa rå-XML för enskild fil
+      output.textContent = rawXmlText;
+      rawDetails.classList.remove('hidden');
 
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
@@ -235,6 +256,9 @@ document.addEventListener('DOMContentLoaded', () => {
       fileInfo.textContent = 'Inga giltiga DMARC-filer hittades i katalogen.';
       return;
     }
+
+    // Dölj rå-XML vid kataloginläsning
+    rawDetails.classList.add('hidden');
 
     fileInfo.textContent = `Hittade ${files.length} filer i katalogen. Bearbetar...`;
 
@@ -320,7 +344,6 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
     summarySection.classList.remove('hidden');
 
-    // Om det finns filer som misslyckades, visa rullgardinsmenyn för fel
     if (failedFiles.length > 0) {
       warningsWrapper.innerHTML = `
         <details>
