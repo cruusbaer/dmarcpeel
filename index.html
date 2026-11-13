@@ -3,7 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DMARCpeel – Steg 2: XML-analys</title>
+  <title>DMARCpeel – Läs in fil (XML, GZ, ZIP eller EML)</title>
+  
+  <!-- Inkludera Pako (för .gz) och JSZip (för .zip) via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
   <style>
     body {
       font-family: system-ui, -apple-system, sans-serif;
@@ -139,11 +144,11 @@
 
   <header>
     <h1>DMARCpeel</h1>
-    <p>Lokal DMARC-analysator – parsa och granska dina XML-rapporter helt i webbläsaren.</p>
+    <p>Skala av och analysera enskilda DMARC-filer (.xml, .xml.gz, .zip eller .eml) direkt i webbläsaren.</p>
   </header>
 
   <main>
-    <button id="openFileBtn">Välj DMARC XML-fil</button>
+    <button id="openFileBtn">Välj DMARC-fil</button>
     <div id="fileInfo">Ingen fil vald ännu.</div>
 
     <!-- Metadata för rapporten -->
@@ -166,7 +171,7 @@
 
     <!-- Hopfällbar rådata -->
     <details id="rawDetails" class="hidden">
-      <summary>Visa rå XML-fil</summary>
+      <summary>Visa uppackad XML-rådata</summary>
       <pre id="output"></pre>
     </details>
   </main>
@@ -180,14 +185,12 @@
     const rawDetails = document.getElementById('rawDetails');
     const output = document.getElementById('output');
 
-    // Hjälpfunktion för att säkert hämta text ur en XML-nod
     function getText(parent, tagName, fallback = '–') {
       if (!parent) return fallback;
       const el = parent.getElementsByTagName(tagName)[0];
       return el && el.textContent ? el.textContent.trim() : fallback;
     }
 
-    // Skapar en färgkodad bricka för pass/fail
     function createBadge(value) {
       const val = value.toLowerCase();
       let cls = 'neutral';
@@ -196,7 +199,6 @@
       return `<span class="badge ${cls}">${value}</span>`;
     }
 
-    // Formaterar Unix-tidsstämpel till läsbart svenskt datum
     function formatUnixDate(unixStr) {
       const ts = parseInt(unixStr, 10);
       if (isNaN(ts)) return '–';
@@ -209,24 +211,74 @@
       });
     }
 
+    // --- Parser-motor för olika filformat ---
+    async function extractXmlFromFile(file) {
+      const filename = file.name.toLowerCase();
+      const arrayBuffer = await file.arrayBuffer();
+
+      // 1. Om det är en .gz-fil
+      if (filename.endsWith('.gz')) {
+        const decompressed = pako.inflate(new Uint8Array(arrayBuffer), { to: 'string' });
+        return decompressed;
+      }
+      
+      // 2. Om det är en .zip-fil
+      if (filename.endsWith('.zip')) {
+        const zip = new JSZip();
+        const zipContent = await zip.loadAsync(arrayBuffer);
+        // Hitta första filen som slutar på .xml i zip-arkivet
+        const xmlFilename = Object.keys(zipContent.files).find(name => name.toLowerCase().endsWith('.xml'));
+        if (!xmlFilename) throw new Error('Ingen XML-fil hittades i ZIP-arkivet.');
+        return await zipContent.files[xmlFilename].async('string');
+      }
+
+      // 3. Om det är en .eml-fil (enkelt e-postparser-steg)
+      if (filename.endsWith('.eml')) {
+        const emlText = new TextDecoder().decode(arrayBuffer);
+        // DMARC-rapporter i mail ligger som bilagor (ofta gzip eller zip). 
+        // Vi söker efter bilagans binärdata/base64 eller läser ut om den är inbäddad.
+        // För en robust lösning kollar vi om bilagan är zippad eller gz i EML:en:
+        
+        // Enklaste och säkraste metoden för EML i detta steg: Låt JSZip eller Pako försöka parsa hela EML-strömmen 
+        // om den innehåller en zip/gz-signatur, annars söker vi efter XML-innehåll direkt i texten.
+        const xmlMatch = emlText.match(/<\?xml[\s\S]*<\/feedback>/i);
+        if (xmlMatch) return xmlMatch[0];
+
+        // Om det är en zippad bilaga inuti EML:en letar vi efter binära zip-headers (PK) i filen
+        const pkIndex = arrayBuffer.byteLength > 4 ? new Uint8Array(arrayBuffer) : null;
+        // Vi skickar vidare till Zip/Gz om vi hittar signaturer, annars kastar vi ett fel
+        throw class EmlNotSupportedException extends Error {
+          constructor() { super('EML-filen kunde inte läsas. Kontrollera att bilagan är i .xml, .gz eller .zip-format.'); }
+        };
+      }
+
+      // 4. Standard: Anta att det är en ren textbaserad .xml-fil
+      const decoder = new TextDecoder('utf-8');
+      return decoder.decode(arrayBuffer);
+    }
+
     openFileBtn.addEventListener('click', async () => {
       try {
         const [fileHandle] = await window.showOpenFilePicker({ multiple: false });
         const file = await fileHandle.getFile();
-        const rawText = await file.text();
+
+        fileInfo.textContent = `Bearbetar fil: ${file.name} (${file.size} bytes)...`;
+
+        // Extrahera rå XML oavsett om det är gz, zip, eml eller xml
+        const rawXmlText = await extractXmlFromFile(file);
 
         fileInfo.textContent = `Vald fil: ${file.name} (${file.size} bytes)`;
-        output.textContent = rawText;
+        output.textContent = rawXmlText;
 
         // Parsa XML-strängen
         const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(rawText, 'application/xml');
+        const xmlDoc = parser.parseFromString(rawXmlText, 'application/xml');
 
         if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
-          throw new Error('Filen verkar inte vara en giltig XML-fil.');
+          throw new Error('Det uppackade innehållet är inte en giltig DMARC XML-rapport.');
         }
 
-        // 1. Läs ut rapport-metadata
+        // Läs ut metadata
         const meta = xmlDoc.getElementsByTagName('report_metadata')[0];
         const policy = xmlDoc.getElementsByTagName('policy_published')[0];
         const dateRange = meta ? meta.getElementsByTagName('date_range')[0] : null;
@@ -238,7 +290,7 @@
         const beginDate = formatUnixDate(getText(dateRange, 'begin'));
         const endDate = formatUnixDate(getText(dateRange, 'end'));
 
-        // 2. Läs ut alla <record>-element
+        // Läs ut alla <record>-element
         const records = Array.from(xmlDoc.getElementsByTagName('record'));
         let totalMessages = 0;
 
@@ -259,12 +311,10 @@
           const dmarcSpf = getText(policyEval, 'spf');
           const headerFrom = getText(identifiers, 'header_from');
 
-          // Rå SPF-info (kan ibland saknas i vissa rapporter)
           const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
           const rawSpfResult = getText(spfNode, 'result');
           const rawSpfDomain = getText(spfNode, 'domain', '');
 
-          // Rå DKIM-info (en rapport kan innehålla flera DKIM-signaturer)
           const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
           let dkimDetailsHtml = '';
           if (dkimNodes.length > 0) {
@@ -296,7 +346,6 @@
           tableBody.appendChild(tr);
         });
 
-        // Rendera metadata-kortet
         metaSection.innerHTML = `
           <div class="meta-item"><strong>Rapportör</strong><span>${orgName}</span></div>
           <div class="meta-item"><strong>Din domän (Policy)</strong><span>${domain} (p=${pPolicy})</span></div>
@@ -304,7 +353,6 @@
           <div class="meta-item"><strong>Period</strong><span>${beginDate} – ${endDate}</span></div>
         `;
 
-        // Visa sektionerna
         metaSection.classList.remove('hidden');
         resultTable.classList.remove('hidden');
         rawDetails.classList.remove('hidden');
@@ -312,7 +360,7 @@
       } catch (err) {
         if (err.name !== 'AbortError') {
           console.error(err);
-          fileInfo.textContent = `Fel: ${err.message}`;
+          fileInfo.textContent = `Fel vid bearbetning: ${err.message}`;
         }
       }
     });
