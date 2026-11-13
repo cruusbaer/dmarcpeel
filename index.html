@@ -8,7 +8,7 @@
   <!-- Inkludera Pako (.gz) och JSZip (.zip) via CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <!-- Stabilare CDN-länk för MSGReader -->
+  <!-- MSGReader för .msg-filer -->
   <script src="https://unpkg.com/@kenjiuno/msgreader@1.15.0/dist/MSGReader.min.js"></script>
 
   <style>
@@ -35,6 +35,9 @@
     }
     button:hover {
       background-color: #334155;
+    }
+    #fileInput {
+      display: none;
     }
     #fileInfo {
       margin-top: 0.75rem;
@@ -150,6 +153,8 @@
   </header>
 
   <main>
+    <!-- Standardiserad filväljare (dold) som triggas av knappen -->
+    <input type="file" id="fileInput" accept=".xml,.gz,.zip,.eml,.msg">
     <button id="openFileBtn">Välj DMARC-rapport</button>
     <div id="fileInfo">Ingen fil vald ännu.</div>
 
@@ -181,12 +186,18 @@
 
   <script>
     const openFileBtn = document.getElementById('openFileBtn');
+    const fileInput = document.getElementById('fileInput');
     const fileInfo = document.getElementById('fileInfo');
     const metaSection = document.getElementById('metaSection');
     const resultTable = document.getElementById('resultTable');
     const tableBody = document.getElementById('tableBody');
     const rawDetails = document.getElementById('rawDetails');
     const output = document.getElementById('output');
+
+    // Klicka på den dolda filinputen när användaren trycker på knappen
+    openFileBtn.addEventListener('click', () => {
+      fileInput.click();
+    });
 
     function getText(parent, tagName, fallback = '–') {
       if (!parent) return fallback;
@@ -271,10 +282,9 @@
       }
 
       if (filename.endsWith('.msg')) {
-        // Kontrollera att MSGReader är tillgängligt
         const ReaderClass = window.MSGReader || window.MsgReader;
         if (!ReaderClass) {
-          throw new Error('MSGReader-biblioteket kunde inte laddas från CDN.');
+          throw new Error('MSGReader-biblioteket kunde inte laddas.');
         }
 
         const msgReader = new ReaderClass(arrayBuffer);
@@ -303,11 +313,12 @@
       return decoder.decode(arrayBuffer);
     }
 
-    openFileBtn.addEventListener('click', async () => {
-      try {
-        const [fileHandle] = await window.showOpenFilePicker({ multiple: false });
-        const file = await fileHandle.getFile();
+    // Lyssna på när användaren väljer en fil i fildialogen
+    fileInput.addEventListener('change', async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
 
+      try {
         fileInfo.textContent = `Bearbetar fil: ${file.name}...`;
 
         const rawXmlText = await extractXmlFromFile(file);
@@ -335,4 +346,86 @@
         const records = Array.from(xmlDoc.getElementsByTagName('record'));
         let totalMessages = 0;
 
-        tableBody.innerHTML
+        tableBody.innerHTML = '';
+
+        records.forEach(record => {
+          const row = record.getElementsByTagName('row')[0];
+          const identifiers = record.getElementsByTagName('identifiers')[0];
+          const authResults = record.getElementsByTagName('auth_results')[0];
+          const policyEval = row ? row.getElementsByTagName('policy_evaluated')[0] : null;
+
+          const sourceIp = getText(row, 'source_ip');
+          const count = parseInt(getText(row, 'count', '0'), 10);
+          totalMessages += count;
+
+          const disposition = getText(policyEval, 'disposition', 'none');
+          const evalDkim = getText(policyEval, 'dkim');
+          const evalSpf = getText(policyEval, 'spf');
+          
+          const dmarcPassed = (evalDkim === 'pass' || evalSpf === 'pass') ? 'pass' : 'fail';
+          const headerFrom = getText(identifiers, 'header_from');
+
+          const spfNode = authResults ? authResults.getElementsByTagName('spf')[0] : null;
+          const rawSpfResult = getText(spfNode, 'result', 'none');
+          const rawSpfDomain = getText(spfNode, 'domain', '');
+
+          const dkimNodes = authResults ? Array.from(authResults.getElementsByTagName('dkim')) : [];
+          let dkimDetailsHtml = '';
+          let bestDkimResult = 'none';
+
+          if (dkimNodes.length > 0) {
+            bestDkimResult = getText(dkimNodes[0], 'result', 'none');
+            dkimDetailsHtml = dkimNodes.map(d => {
+              const res = getText(d, 'result');
+              const dom = getText(d, 'domain', '');
+              const sel = getText(d, 'selector', '');
+              return `${res} (${dom}${sel ? ' / ' + sel : ''})`;
+            }).join('<br>');
+          } else {
+            dkimDetailsHtml = 'Ingen signatur (none)';
+          }
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="mono"><strong>${sourceIp}</strong></td>
+            <td><strong>${count}</strong></td>
+            <td class="mono">${headerFrom}</td>
+            <td>${createBadge(disposition)}</td>
+            <td>${createBadge(dmarcPassed)}</td>
+            <td>
+              ${createBadge(rawSpfResult)}
+              <span class="sub-detail">${rawSpfDomain}</span>
+            </td>
+            <td>
+              ${createBadge(bestDkimResult)}
+              <span class="sub-detail">${dkimDetailsHtml}</span>
+            </td>
+          `;
+          tableBody.appendChild(tr);
+        });
+
+        metaSection.innerHTML = `
+          <div class="meta-item"><strong>Rapportör</strong><span>${orgName}</span></div>
+          <div class="meta-item"><strong>Din domän (Policy)</strong><span>${domain} (p=${pPolicy})</span></div>
+          <div class="meta-item"><strong>Totalt antal mail</strong><span>${totalMessages} st (${records.length} poster)</span></div>
+          <div class="meta-item"><strong>Period</strong><span>${beginDate} – ${endDate}</span></div>
+        `;
+
+        metaSection.classList.remove('hidden');
+        resultTable.classList.remove('hidden');
+        rawDetails.classList.remove('hidden');
+
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error(err);
+          fileInfo.textContent = `Fel vid bearbetning: ${err.message}`;
+        }
+      } finally {
+        // Nollställ inputen så samma fil kan väljas igen om man vill
+        fileInput.value = '';
+      }
+    });
+  </script>
+
+</body>
+</html>
