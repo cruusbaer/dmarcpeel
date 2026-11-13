@@ -2,10 +2,94 @@
 <html lang="sv">
 <head>
   <meta charset="UTF-8">
-  <title>DMARCpeel – Local-First DMARC Analyzer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DMARCpeel – Steg 1: Rå filläsare</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 960px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background-color: #f9fafb;
+    }
+    header {
+      margin-bottom: 1.5rem;
+    }
+    button {
+      background-color: #0f172a;
+      color: #ffffff;
+      border: none;
+      padding: 0.75rem 1.25rem;
+      font-size: 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #334155;
+    }
+    #fileInfo {
+      margin-top: 1rem;
+      font-weight: 600;
+      color: #475569;
+    }
+    pre {
+      background-color: #1e293b;
+      color: #e2e8f0;
+      padding: 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 1rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.875rem;
+      min-height: 200px;
+    }
+  </style>
 </head>
 <body>
-  <h1>DMARCpeel är igång!</h1>
-  <p>Redo att skala av XML-filer lokalt i webbläsaren.</p>
+
+  <header>
+    <h1>DMARCpeel</h1>
+    <p>Steg 1: Välj en lokal okomprimerad fil för att läsa ut råinnehållet direkt i webbläsaren.</p>
+  </header>
+
+  <main>
+    <button id="openFileBtn">Välj lokal fil</button>
+    <div id="fileInfo">Ingen fil vald ännu.</div>
+    <pre id="output">Här visas filens innehåll...</pre>
+  </main>
+
+  <script>
+    const openFileBtn = document.getElementById('openFileBtn');
+    const fileInfo = document.getElementById('fileInfo');
+    const output = document.getElementById('output');
+
+    openFileBtn.addEventListener('click', async () => {
+      try {
+        // Öppnar webbläsarens lokala filväljare (kräver Chrome/Edge eller liknande Chromium-läsare)
+        const [fileHandle] = await window.showOpenFilePicker({
+          multiple: false
+        });
+
+        const file = await fileHandle.getFile();
+        const rawText = await file.text();
+
+        fileInfo.textContent = `Vald fil: ${file.name} (${file.size} bytes)`;
+        // Använder textContent så att XML-taggarna skrivs ut som ren text och inte tolkas som HTML
+        output.textContent = rawText;
+
+      } catch (err) {
+        // Ignorera fel om användaren bara klickade på "Avbryt" i fildialogen
+        if (err.name !== 'AbortError') {
+          console.error(err);
+          fileInfo.textContent = `Fel vid läsning: ${err.message}`;
+        }
+      }
+    });
+  </script>
+
 </body>
 </html>
